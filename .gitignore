@@ -1,0 +1,26 @@
+*.iml
+.gradle
+.kotlin/
+/local.properties
+.idea/
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+local.properties
+
+# Signing secrets
+keystore.properties
+*.jks
+*.keystore
+
+# Build outputs produced by app.py
+/release/
+*.apk
+*.aab
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/

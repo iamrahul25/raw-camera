@@ -1,0 +1,132 @@
+DualCam
+-------
+
+Capture with Two Cameras at Once
+Product Requirements Document (PRD)
+
+1. Product Overview
+DualCam is an Android camera app that captures video or photos from two cameras simultaneously (e.g., front + rear), with customizable templates, ratios, and output options (combined or separate raw files).
+
+2. Goals
+- Enable simultaneous dual-camera capture.
+- Provide flexible layout templates and aspect ratios.
+- Allow users to save a combined output and/or separate raw files for editing.
+- Offer a simple, high-quality, and customizable experience.
+
+3. Key Features
+- Dual Camera Capture – Record or take photos from two cameras at the same time.
+- Templates – Choose from various split-screen layouts (e.g., Side by Side, Picture-in-Picture, Top-Bottom, etc.).
+- Aspect Ratios – Set overall output ratio (e.g., 16:9, 9:16, 1:1) and individual ratios for each camera.
+- Output Options – Save combined media, separate raw front and rear files, or both.
+- Live Preview – See the template and both camera feeds in real time.
+- Camera Controls – Switch cameras, tap to focus, exposure, flash, and more.
+- Gallery & Management – View, play, share, or delete captured media.
+- Settings – Resolution, bitrate/quality, storage, and more.
+
+4. Supported Templates (Examples)
+    1. Side by Side
+    2. Top & Bottom
+    3. Picture in Picture
+    4. Corner PIP
+    5. Diagonal Split
+    6. Triple (2+1)
+    7. Grid (2×2)
+    8. Custom
+
+5. User Flow
+
+    1. Open DualCam.
+    2. Choose mode (Video / Photo).
+    3. Select a template.
+    4. Set aspect ratios & output options.
+    5. Capture (record or take photo).
+    6. View, manage, and share from gallery.
+
+6. Tech Stack
+- Language: Kotlin
+- Camera: CameraX
+- Media Processing: Media3 (merge, encode, mux)
+- UI: Jetpack Compose (or XML)
+- Storage: Scoped Storage (MediaStore)
+- Build: Gradle (Android Studio)
+- Target: Android 8.0+ (API 26+)
+
+7. Functional Requirements (FR)
+- FR-01: Capture photo and video from two cameras simultaneously.
+- FR-02: Support multiple predefined templates.
+- FR-03: Allow custom aspect ratio for overall output and each camera.
+- FR-04: Save combined, separate, or both outputs.
+- FR-05: Provide real-time preview with the selected template.
+- FR-06: Manage captured media (view, share, delete, rename).
+
+8. Non-Functional Requirements (NFR)
+- NFR-01: Stable recording (minimal frame drops).
+- NFR-02: High-quality output (configurable resolution and bitrate).
+- NFR-03: Optimized performance and battery usage.
+- NFR-04: Clear and intuitive UI / UX.
+- NFR-05: Support a wide range of Android devices (dual/multi-camera capable).
+
+9. MVP Scope (v1.0)
+- Dual photo and video capture.
+- Predefined templates (Side by Side, Top-Bottom, PIP, etc.).
+- Aspect ratio selection.
+- Output options (combined / separate / both).
+- Basic gallery and sharing.
+
+10. Future Enhancements
+- Custom template editor.
+- More layout styles (N-cam, collage, etc.).
+- Manual camera controls (ISO, shutter, WB, etc.).
+- Background recording (video).
+- Cloud backup and project export for editing apps.
+
+App UI Screenshots – Visible Text
+
+Screen 1: Home
+- DualCam
+- Dual Video
+- Record with two cameras
+- Dual Photo
+- Capture photos from two cameras
+- Templates
+- Gallery
+
+Screen 2: Choose Template
+- Choose Template
+- All
+- Split
+- PIP
+- Creative
+- Side by Side
+- Top & Bottom
+- Picture in Picture
+- Corner PIP
+- Diagonal Split
+- Triple (2+1)
+
+Screen 3: Video Capture
+- DualCam
+- Video timer
+- Photo
+- Video
+- Record button
+- Camera button
+
+Screen 4: Photo Capture
+- Photo
+- Video
+- Capture button
+- Camera button
+
+Screen 5: Output Options
+- Combined Only
+  - Save a single merged video/photo
+- Separate Only
+  - Save raw Front and Rear files
+- Both (Recommended)
+  - Save combined + separate raw files
+- Save Location
+  - Internal Storage / DualCam
+- File Naming
+  - DC_YYYYMMDD_HHMMSS
+- Save
