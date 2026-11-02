@@ -55,6 +55,7 @@ class FullSensorCamera(private val context: Context, private val onError: (Strin
     private class Bound(
         val info: CameraInfo,
         val option: VideoSizeOption,
+        val previewSize: Size,
         val settings: CaptureSettings,
     )
 
@@ -79,8 +80,7 @@ class FullSensorCamera(private val context: Context, private val onError: (Strin
             previewSurface = Surface(surfaceTexture)
             texture = surfaceTexture
         }
-        surfaceTexture.setDefaultBufferSize(previewSize.width, previewSize.height)
-        bound = Bound(info, option, settings)
+        bound = Bound(info, option, previewSize, settings)
         startPreviewLocked()
     }
 
@@ -118,6 +118,7 @@ class FullSensorCamera(private val context: Context, private val onError: (Strin
             session?.close()
             session = null
             val targets = listOf(preview, rec.surface)
+            applyPreviewBufferSize(b)
             val s = dev.createSession(targets)
             session = s
             s.setRepeatingRequest(buildRequest(dev, CameraDevice.TEMPLATE_RECORD, targets, b), null, handler)
@@ -169,9 +170,18 @@ class FullSensorCamera(private val context: Context, private val onError: (Strin
         val b = bound ?: return
         val surface = previewSurface ?: return
         val dev = device ?: openDevice(b.info.id).also { device = it }
+        applyPreviewBufferSize(b)
         val s = dev.createSession(listOf(surface))
         session = s
         s.setRepeatingRequest(buildRequest(dev, CameraDevice.TEMPLATE_PREVIEW, listOf(surface), b), null, handler)
+    }
+
+    /**
+     * TextureView resets its buffer size to its own pixel size whenever it is resized (e.g. when the
+     * preview aspect changes on a camera switch), so this must run right before every session is created.
+     */
+    private fun applyPreviewBufferSize(b: Bound) {
+        texture?.setDefaultBufferSize(b.previewSize.width, b.previewSize.height)
     }
 
     private suspend fun stopRecordingLocked(restartPreview: Boolean): SavedVideo? {
