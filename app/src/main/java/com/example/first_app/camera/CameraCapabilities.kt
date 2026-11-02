@@ -26,6 +26,8 @@ private const val TAG = "FullSensor"
 private const val MAX_PREVIEW_AREA = 1920 * 1440
 private val PREFERRED_FPS = intArrayOf(30, 25, 24, 20, 15)
 private const val UHD_SHORT_SIDE = 2160
+private const val MAX_PROBED_ID = 64
+private const val MIN_USEFUL_ZOOM_OUT = 0.95f
 private val TIERS = listOf(UHD_SHORT_SIDE to "4K", 1440 to "1440p", 1080 to "1080p", 720 to "720p", 540 to "540p", 480 to "480p")
 
 data class EncoderChoice(
@@ -54,7 +56,21 @@ data class VideoSizeOption(
 }
 
 data class CameraInfo(
+    /** Unique key for this entry; differs from [openId] for physical lenses and zoom-out entries. */
     val id: String,
+    /** Camera device passed to openCamera. */
+    val openId: String,
+    /** Set when this lens is streamed through the logical multi-camera [openId]. */
+    val physicalId: String?,
+    /** True when the system's camera list doesn't include this camera. */
+    val hidden: Boolean,
+    /** Requested CONTROL_ZOOM_RATIO; below 1 when a logical camera zooms out onto its ultra-wide lens. */
+    val zoomRatio: Float,
+    val minZoomRatio: Float,
+    /** Lenses behind this camera when it is a logical multi-camera. */
+    val physicalIds: List<String>,
+    /** Names of request keys that can be set per physical lens (only for [physicalId] entries). */
+    val physicalRequestKeys: Set<String>,
     val facing: Int,
     val sensorOrientation: Int,
     val activeArray: Rect,
@@ -90,10 +106,26 @@ data class CameraInfo(
             return if (diagonal > 0f) (f * 43.27f / diagonal).roundToInt() else null
         }
 
+    /** 35mm-equivalent focal length after [zoomRatio]. */
+    val effectiveFocalLength: Int?
+        get() = equivalentFocalLength?.let { (it * zoomRatio).roundToInt() }
+
+    val lensKind: String
+        get() {
+            val mm = effectiveFocalLength ?: return "camera"
+            return when {
+                mm < 20 -> "ultra-wide"
+                mm > 40 -> "telephoto"
+                else -> "main"
+            }
+        }
+
+    val isLogical: Boolean get() = physicalIds.isNotEmpty()
+
     val label: String
         get() = buildString {
             append(facingLabel).append(' ').append(id)
-            equivalentFocalLength?.let { append(" · ").append(it).append("mm") }
+            effectiveFocalLength?.let { append(" · ").append(it).append("mm") }
         }
 
     /** Display ratio of a frame once rotated upright on a portrait-natural device. */
@@ -113,7 +145,12 @@ data class CameraInfo(
     }
 
     fun report(): String = buildString {
-        appendLine("Camera $id ($facingLabel)")
+        appendLine("Camera $id ($facingLabel $lensKind)")
+        if (hidden) appendLine("Not in the system camera list (found by probing)")
+        physicalId?.let { appendLine("Physical lens $it, streamed through logical camera $openId") }
+        if (isLogical) appendLine("Logical multi-camera over lenses ${physicalIds.joinToString()}")
+        if (zoomRatio != 1f) appendLine("Zoom ratio: ${zoomRatio}×")
+        if (minZoomRatio < 1f) appendLine("Zoom ratio range starts at ${minZoomRatio}×")
         appendLine("Hardware level: $hardwareLevel")
         appendLine("Sensor orientation: $sensorOrientation°")
         pixelArray?.let { appendLine("Pixel array: ${it.describe()}") }
@@ -138,12 +175,17 @@ data class CameraInfo(
     }
 }
 
-/** "Back camera", "Front camera", or "Back camera 2" when several share a facing. */
+/** "Back camera" when it is the only one facing that way, otherwise e.g. "Back ultra-wide" or "Back main 2". */
 fun List<CameraInfo>.friendlyName(index: Int): String {
     val camera = get(index)
     val sameFacing = filter { it.facing == camera.facing }
-    val base = "${camera.facingLabel} camera"
-    return if (sameFacing.size > 1) "$base ${sameFacing.indexOf(camera) + 1}" else base
+    if (sameFacing.size == 1) return "${camera.facingLabel} camera"
+    val sameKind = sameFacing.filter { it.lensKind == camera.lensKind }
+    return buildString {
+        append(camera.facingLabel).append(' ').append(camera.lensKind)
+        if (sameKind.size > 1) append(' ').append(sameKind.indexOf(camera) + 1)
+        if (camera.zoomRatio != 1f) append(" (%.1f×)".format(camera.zoomRatio))
+    }
 }
 
 fun Size.describe(): String = "${width}×${height} (%.1f MP)".format(width * height / 1_000_000f)
@@ -175,30 +217,97 @@ fun ratioLabel(ratio: Float): String {
 
 object CameraInspector {
 
+    /**
+     * Every camera the app can record from, main cameras first. Besides the system's camera list this
+     * probes for unlisted camera IDs (some phones hide extra lenses there), adds the individual lenses
+     * behind logical multi-cameras, and adds a zoomed-out entry when a logical camera reaches an
+     * ultra-wide lens only through a zoom ratio below 1.
+     */
     fun inspectAll(context: Context): List<CameraInfo> {
         val manager = context.getSystemService(CameraManager::class.java)
         val encoders = EncoderCatalog()
-        return manager.cameraIdList
-            .mapNotNull { id ->
-                runCatching { inspect(id, manager.getCameraCharacteristics(id), encoders) }
-                    .onFailure { Log.w(TAG, "Skipping camera $id", it) }
-                    .getOrNull()
+        fun tryInspect(source: Source): CameraInfo? =
+            runCatching {
+                val chars = manager.getCameraCharacteristics(source.physicalId ?: source.openId)
+                val requestChars = if (source.physicalId != null) manager.getCameraCharacteristics(source.openId) else chars
+                inspect(source, chars, requestChars, encoders)
             }
+                .onFailure { Log.w(TAG, "Skipping camera ${source.physicalId ?: source.openId}", it) }
+                .getOrNull()
+
+        val publicIds = manager.cameraIdList.toList()
+        val listed = publicIds.mapNotNull { tryInspect(Source(it)) }
+        // Lenses of listed logical cameras usually answer getCameraCharacteristics but can't be opened alone.
+        val listedLenses = listed.flatMap { it.physicalIds }.toSet()
+        val probed = (0 until MAX_PROBED_ID).map(Int::toString)
+            .filter { it !in publicIds && it !in listedLenses }
+            .filter { id -> runCatching { manager.getCameraCharacteristics(id) }.isSuccess }
+            .mapNotNull { tryInspect(Source(it, hidden = true)) }
+        Log.i(TAG, "Listed cameras: $publicIds; unlisted cameras found by probing: ${probed.map { it.id }}")
+
+        val direct = listed + probed
+        val directIds = direct.map { it.id }.toSet()
+        val lenses = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            direct.filter { it.isLogical }
+                .flatMap { logical ->
+                    val keys = manager.getCameraCharacteristics(logical.openId)
+                        .availablePhysicalCameraRequestKeys.orEmpty().map { it.name }.toSet()
+                    logical.physicalIds.filter { it !in directIds }
+                        .map { Source(logical.openId, physicalId = it, hidden = logical.hidden, physicalRequestKeys = keys) }
+                }
+                .distinctBy { it.physicalId }
+                .mapNotNull(::tryInspect)
+        } else emptyList()
+
+        // A logical camera adds nothing when every one of its lenses can be opened on its own.
+        val cameras = direct.filterNot { it.isLogical && it.physicalIds.all { id -> id in directIds } } + lenses
+        val zoomedOut = cameras.mapNotNull { camera -> zoomedOutEntry(camera, cameras) }
+        return (cameras + zoomedOut)
             .sortedWith(
                 compareBy<CameraInfo> { it.facing != CameraMetadata.LENS_FACING_BACK }
-                    .thenBy { it.id.toIntOrNull() ?: Int.MAX_VALUE }
+                    .thenBy { it.hidden || it.physicalId != null || it.zoomRatio != 1f }
+                    .thenBy { it.openId.toIntOrNull() ?: Int.MAX_VALUE }
+                    .thenBy { it.id }
             )
             .onEach { info -> info.report().lines().forEach { Log.i(TAG, it) } }
     }
 
-    private fun inspect(id: String, chars: CameraCharacteristics, encoders: EncoderCatalog): CameraInfo? {
+    /** The logical camera at its minimum zoom ratio, unless some other entry already covers that view. */
+    private fun zoomedOutEntry(camera: CameraInfo, all: List<CameraInfo>): CameraInfo? {
+        if (camera.minZoomRatio >= MIN_USEFUL_ZOOM_OUT) return null
+        val zoomed = camera.copy(id = "${camera.id}@${camera.minZoomRatio}x", zoomRatio = camera.minZoomRatio)
+        val widest = zoomed.effectiveFocalLength
+        val covered = widest != null && all.any { other ->
+            other !== camera && other.facing == camera.facing &&
+                other.effectiveFocalLength?.let { it <= widest * 1.15f } == true
+        }
+        return zoomed.takeUnless { covered }
+    }
+
+    private class Source(
+        val openId: String,
+        val physicalId: String? = null,
+        val hidden: Boolean = false,
+        val physicalRequestKeys: Set<String> = emptySet(),
+    )
+
+    /**
+     * [chars] describes the lens itself; [requestChars] the device whose capture requests drive it
+     * (the logical camera for physical lenses), which limits request values such as the AE fps range.
+     */
+    private fun inspect(
+        source: Source,
+        chars: CameraCharacteristics,
+        requestChars: CameraCharacteristics,
+        encoders: EncoderCatalog,
+    ): CameraInfo? {
         val capabilityCodes = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: IntArray(0)
         if (CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_BACKWARD_COMPATIBLE !in capabilityCodes) return null
 
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
         val activeArray = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return null
         val sensorRatio = activeArray.width().toFloat() / activeArray.height()
-        val fpsRanges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
+        val fpsRanges = requestChars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES)
             ?.toList().orEmpty()
 
         val videoSizes = map.getOutputSizes(MediaRecorder::class.java).orEmpty()
@@ -234,8 +343,22 @@ object CameraInspector {
             chars.get(CameraCharacteristics.DISTORTION_CORRECTION_AVAILABLE_MODES)
         } else null
 
+        val physicalIds = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+            CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA in capabilityCodes
+        ) chars.physicalCameraIds.toList() else emptyList()
+        val minZoom = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && source.physicalId == null) {
+            chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.lower ?: 1f
+        } else 1f
+
         return CameraInfo(
-            id = id,
+            id = source.physicalId ?: source.openId,
+            openId = source.openId,
+            physicalId = source.physicalId,
+            hidden = source.hidden,
+            zoomRatio = 1f,
+            minZoomRatio = minZoom,
+            physicalIds = physicalIds,
+            physicalRequestKeys = source.physicalRequestKeys,
             facing = chars.get(CameraCharacteristics.LENS_FACING) ?: CameraMetadata.LENS_FACING_EXTERNAL,
             sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90,
             activeArray = activeArray,

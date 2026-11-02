@@ -14,6 +14,9 @@ OUTPUTS_DIR = os.path.join(PROJECT_DIR, "app", "build", "outputs")
 DEBUG_APK = os.path.join(OUTPUTS_DIR, "apk", "debug", "app-debug.apk")
 RELEASE_APK = os.path.join(OUTPUTS_DIR, "apk", "release", "app-release.apk")
 RELEASE_AAB = os.path.join(OUTPUTS_DIR, "bundle", "release", "app-release.aab")
+# Installs as a separate app under a package Qualcomm phones whitelist for hidden lenses (e.g. ultra-wide).
+ALL_LENSES_PACKAGE = "org.codeaurora.snapcam"
+ALL_LENSES_APK = os.path.join(OUTPUTS_DIR, "apk", "allLenses", "app-allLenses.apk")
 RELEASE_DIR = os.path.join(PROJECT_DIR, "release")
 APP_GRADLE = os.path.join(PROJECT_DIR, "app", "build.gradle.kts")
 LINT_REPORT = os.path.join(PROJECT_DIR, "app", "build", "reports", "lint-results-release.html")
@@ -143,13 +146,23 @@ def build_debug_apk():
     return True
 
 
-def install_and_launch(serial):
-    if not build_debug_apk():
+def build_all_lenses_apk():
+    if not run_command([GRADLEW, "assembleAllLenses"]):
+        print("Build failed.")
+        return False
+    print(f"All-lenses APK: {ALL_LENSES_APK}")
+    return True
+
+
+def install_and_launch(serial, all_lenses=False):
+    if not (build_all_lenses_apk() if all_lenses else build_debug_apk()):
         return
-    if not run_command([ADB, "-s", serial, "install", "-r", DEBUG_APK]):
+    apk = ALL_LENSES_APK if all_lenses else DEBUG_APK
+    component = f"{ALL_LENSES_PACKAGE}/{PACKAGE}.MainActivity" if all_lenses else LAUNCH_COMPONENT
+    if not run_command([ADB, "-s", serial, "install", "-r", apk]):
         print("Install failed.")
         return
-    if run_command([ADB, "-s", serial, "shell", "am", "start", "-n", LAUNCH_COMPONENT]):
+    if run_command([ADB, "-s", serial, "shell", "am", "start", "-n", component]):
         print("App launched.")
     else:
         print("Failed to launch the app.")
@@ -219,7 +232,7 @@ def run_on_emulator():
         install_and_launch(serial)
 
 
-def run_on_physical_device():
+def run_on_physical_device(all_lenses=False):
     if not require_adb():
         return
 
@@ -236,7 +249,11 @@ def run_on_physical_device():
 
     selected = choose([(s, device_name(s)) for s in ready], "a device")
     if selected:
-        install_and_launch(selected[0])
+        install_and_launch(selected[0], all_lenses)
+
+
+def run_all_lenses_on_physical_device():
+    run_on_physical_device(all_lenses=True)
 
 
 def show_connected_devices():
@@ -550,6 +567,8 @@ MENU = [
     ("7", "Preflight test (environment, unit tests, lint, debug build)", preflight_test),
     ("8", "Build .apk app (Release)", build_release_apk),
     ("9", "Build .aab app (Play Store, signed)", build_release_aab),
+    ("10", "Run the all-lenses build on a mobile device (unlocks hidden lenses on Qualcomm phones)",
+     run_all_lenses_on_physical_device),
     ("0", "Exit", None),
 ]
 

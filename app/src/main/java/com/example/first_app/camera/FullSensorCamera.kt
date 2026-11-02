@@ -71,7 +71,7 @@ class FullSensorCamera(private val context: Context, private val onError: (Strin
         check(recorder == null) { "Stop recording before changing the camera setup" }
         session?.close()
         session = null
-        if (device?.id != info.id) {
+        if (device?.id != info.openId) {
             device?.close()
             device = null
         }
@@ -119,7 +119,7 @@ class FullSensorCamera(private val context: Context, private val onError: (Strin
             session = null
             val targets = listOf(preview, rec.surface)
             applyPreviewBufferSize(b)
-            val s = dev.createSession(targets)
+            val s = dev.createSession(targets, b.info.physicalId)
             session = s
             s.setRepeatingRequest(buildRequest(dev, CameraDevice.TEMPLATE_RECORD, targets, b), null, handler)
             rec.start()
@@ -169,9 +169,9 @@ class FullSensorCamera(private val context: Context, private val onError: (Strin
     private suspend fun startPreviewLocked() {
         val b = bound ?: return
         val surface = previewSurface ?: return
-        val dev = device ?: openDevice(b.info.id).also { device = it }
+        val dev = device ?: openDevice(b.info.openId).also { device = it }
         applyPreviewBufferSize(b)
-        val s = dev.createSession(listOf(surface))
+        val s = dev.createSession(listOf(surface), b.info.physicalId)
         session = s
         s.setRepeatingRequest(buildRequest(dev, CameraDevice.TEMPLATE_PREVIEW, listOf(surface), b), null, handler)
     }
@@ -212,26 +212,50 @@ class FullSensorCamera(private val context: Context, private val onError: (Strin
         template: Int,
         targets: List<Surface>,
         b: Bound,
-    ): CaptureRequest = dev.createCaptureRequest(template).apply {
-        targets.forEach(::addTarget)
-        val active = b.info.activeArray
-        set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-        set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, b.option.aeFpsRange)
-        set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
-        set(CaptureRequest.SCALER_CROP_REGION, Rect(0, 0, active.width(), active.height()))
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            set(CaptureRequest.CONTROL_ZOOM_RATIO, 1f)
+    ): CaptureRequest {
+        val info = b.info
+        val physicalId = info.physicalId
+        val builder = if (physicalId != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            dev.createCaptureRequest(template, setOf(physicalId))
+        } else {
+            dev.createCaptureRequest(template)
         }
-        if (CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO in b.info.afModes) {
-            set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+
+        /** Applies a lens-specific setting to the physical lens when it accepts it, else to the whole camera. */
+        fun <T> CaptureRequest.Builder.setForLens(key: CaptureRequest.Key<T>, value: T) {
+            if (physicalId != null && key.name in info.physicalRequestKeys &&
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+            ) {
+                setPhysicalCameraKey(key, value, physicalId)
+            } else {
+                set(key, value)
+            }
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
-            b.settings.disableDistortionCorrection &&
-            CameraMetadata.DISTORTION_CORRECTION_MODE_OFF in b.info.distortionCorrectionModes
-        ) {
-            set(CaptureRequest.DISTORTION_CORRECTION_MODE, CameraMetadata.DISTORTION_CORRECTION_MODE_OFF)
-        }
-    }.build()
+
+        return builder.apply {
+            targets.forEach(::addTarget)
+            val active = info.activeArray
+            set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+            set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, b.option.aeFpsRange)
+            set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
+            // A physical lens's active array is in its own coordinates, so it can't crop the logical camera.
+            if (physicalId == null || CaptureRequest.SCALER_CROP_REGION.name in info.physicalRequestKeys) {
+                setForLens(CaptureRequest.SCALER_CROP_REGION, Rect(0, 0, active.width(), active.height()))
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                set(CaptureRequest.CONTROL_ZOOM_RATIO, info.zoomRatio)
+            }
+            if (CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO in info.afModes) {
+                setForLens(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P &&
+                b.settings.disableDistortionCorrection &&
+                CameraMetadata.DISTORTION_CORRECTION_MODE_OFF in info.distortionCorrectionModes
+            ) {
+                setForLens(CaptureRequest.DISTORTION_CORRECTION_MODE, CameraMetadata.DISTORTION_CORRECTION_MODE_OFF)
+            }
+        }.build()
+    }
 
     private fun newMediaRecorder(): MediaRecorder =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(context)
@@ -264,7 +288,8 @@ class FullSensorCamera(private val context: Context, private val onError: (Strin
         }, handler)
     }
 
-    private suspend fun CameraDevice.createSession(targets: List<Surface>): CameraCaptureSession =
+    /** With [physicalId], every target streams from that lens of this logical camera. */
+    private suspend fun CameraDevice.createSession(targets: List<Surface>, physicalId: String?): CameraCaptureSession =
         suspendCancellableCoroutine { cont ->
             val callback = object : CameraCaptureSession.StateCallback() {
                 override fun onConfigured(session: CameraCaptureSession) {
@@ -283,7 +308,9 @@ class FullSensorCamera(private val context: Context, private val onError: (Strin
                 createCaptureSession(
                     SessionConfiguration(
                         SessionConfiguration.SESSION_REGULAR,
-                        targets.map { OutputConfiguration(it) },
+                        targets.map { surface ->
+                            OutputConfiguration(surface).apply { physicalId?.let(::setPhysicalCameraId) }
+                        },
                         executor,
                         callback,
                     )

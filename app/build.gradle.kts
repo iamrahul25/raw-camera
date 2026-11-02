@@ -46,6 +46,12 @@ android {
                 enable = false
             }
         }
+        // Debug build installed under a package that Qualcomm phones whitelist for auxiliary cameras;
+        // see the androidComponents block below.
+        create("allLenses") {
+            initWith(getByName("debug"))
+            matchingFallbacks += "debug"
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -53,6 +59,14 @@ android {
     }
     buildFeatures {
         compose = true
+    }
+}
+
+// Qualcomm's camera service only lists auxiliary cameras (e.g. the iQOO Neo 10R ultra-wide) to packages
+// named in the vendor.camera.aux.packagelist system property; this name is on that list but not installed.
+androidComponents {
+    onVariants(selector().withBuildType("allLenses")) { variant ->
+        variant.applicationId.set("org.codeaurora.snapcam")
     }
 }
 
