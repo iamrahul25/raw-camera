@@ -1,0 +1,13 @@
+Features to add: 
+----------------
+
+1. Focus lock option click hold and lock + a brightness/expore control similar to the tradional camera apps
+2. ISO -> Right now auto keep it a particular value. 
+3. This testing phone is iqoo neo 10R it has ultra wide camera at the back but in my camera app tradiional which
+ came with phone does not support video recording for that camera. Is it possible to 
+ record video from that camera
+4. Why there is not 60fps support try to add that if possible. 
+5. All camera have same bitrate option fix that -> Keep minimal and suitable bitrate -> Why to increase
+unnecessary size of the video
+
+
